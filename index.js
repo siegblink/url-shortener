@@ -1,9 +1,15 @@
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
 const app = express();
-const bodyParser = require('body-parser');
+
+const cors = require('cors');
 const dns = require('dns');
+const { MongoClient } = require('mongodb');
+
+// Connect to the MongoDB database
+const client = new MongoClient(process.env.MONGO_URI);
+const db = client.db('url_shortener');
+const urls = db.collection('urls');
 
 // Basic Configuration
 const port = process.env.PORT || 3000;
@@ -11,66 +17,54 @@ const port = process.env.PORT || 3000;
 // Middlewares
 app.use(cors());
 app.use('/public', express.static(`${process.cwd()}/public`));
-app.use(bodyParser.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
 app.get('/', function (req, res) {
   res.sendFile(process.cwd() + '/views/index.html');
 });
 
-let cache = [];
-
-// Your first API endpoint
-app.get('/api/hello', function (req, res) {
-  res.json({ greeting: 'hello API' });
-});
-
+// API endpoints
 app.post('/api/shorturl', function (req, res) {
-  // Get the URL from the form
-  const hostname = getHostnameFromUrl(req.body.url);
+  const { url } = req.body;
 
-  // Use the`dns.lookup(host, cb)` function from the dns core module to verify a submitted URL.
-  dns.lookup(hostname, (err, address, family) => {
-    if (err) {
-      console.error('Error:', err.code);
-      console.error('Invalid URL (no DNS records found)');
+  // Parse the URL
+  const parsedUrl = new URL(url);
 
+  // Check if the URL is valid
+  dns.lookup(parsedUrl.hostname, async (err, address) => {
+    if (!address) {
       return res.json({ error: 'invalid url' });
     }
 
-    // If the URL is valid, save the URL and the shortened URL
-    const short_url = Math.floor(Math.random() * 1000);
+    // URL count
+    const urlCount = await urls.countDocuments({});
 
-    // Save the URL and the shortened URL
-    cache.push({ original_url: `http://${hostname}`, short_url });
+    // URL document
+    const urlDoc = {
+      url,
+      short_url: urlCount,
+    };
 
-    console.log('Valid URL. IP address:', address);
+    // Insert the URL document into the database
+    const result = await urls.insertOne(urlDoc);
 
-    // Return the shortened URL
-    res.json({ original_url: req.body.url, short_url });
+    console.log('Inserted document with _id: ', result.insertedId);
+    console.log('Result: ', result);
+
+    res.json({ original_url: url, short_url: urlCount });
   });
 });
 
-app.get('/api/shorturl/:short_url', function (req, res) {
-  // Get the short URL from the URL
-  const short_url = req.params.short_url;
-  console.log('Short URL:', short_url);
+app.get('/api/shorturl/:short_url', async (req, res) => {
+  const { short_url } = req.params;
 
-  // Find the original URL
-  const match = cache.find(
-    (item) => String(item.short_url) === String(short_url)
-  );
+  // Find the URL document in the database
+  const urlDoc = await urls.findOne({ short_url: parseInt(short_url) });
 
-  // Redirect to the original URL
-  if (match?.original_url) {
-    res.redirect(302, match.original_url);
-  }
+  res.redirect(urlDoc.url);
 });
 
 app.listen(port, function () {
   console.log(`Listening on port ${port}`);
 });
-
-function getHostnameFromUrl(url) {
-  const parsedUrl = new URL(url);
-  return parsedUrl.hostname;
-}
